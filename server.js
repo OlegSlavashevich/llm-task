@@ -1,42 +1,22 @@
 require('dotenv').config();
 const express = require('express');
-const OpenAI = require('openai');
+const { generateObject } = require('ai');
+const { anthropic } = require('@ai-sdk/anthropic');
+const { z } = require('zod');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Initialize OpenAI client
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
-
 // Middleware
 app.use(express.json());
 
-// JSON Schema for Structured Output
-const classificationSchema = {
-  type: "object",
-  properties: {
-    zip: {
-      type: ["string", "null"],
-      description: "Postal code (ZIP code), if found in the text"
-    },
-    brand: {
-      type: ["string", "null"],
-      description: "Brand or company name, if mentioned"
-    },
-    category: {
-      type: ["string", "null"],
-      description: "Product or service category (e.g., food, electronics, clothing)"
-    },
-    time_pref: {
-      type: ["string", "null"],
-      description: "Time preferences (e.g., today, tomorrow, evening, morning)"
-    }
-  },
-  required: ["zip", "brand", "category", "time_pref"],
-  additionalProperties: false
-};
+// Zod Schema for Type-Safe Structured Output
+const classificationSchema = z.object({
+  zip: z.string().nullable().describe("Postal code (ZIP code), if found in the text"),
+  brand: z.string().nullable().describe("Brand or company name, if mentioned"),
+  category: z.string().nullable().describe("Product or service category (e.g., food, electronics, clothing)"),
+  time_pref: z.string().nullable().describe("Time preferences (e.g., today, tomorrow, evening, morning)")
+});
 
 // Endpoint for text classification
 app.post('/classify', async (req, res) => {
@@ -56,13 +36,11 @@ app.post('/classify', async (req, res) => {
       });
     }
 
-    // Call OpenAI API with Structured Output
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini", // or gpt-4o for better quality
-      messages: [
-        {
-          role: "system",
-          content: `You are a professional information extraction specialist. Your task is to analyze text and extract specific structured data with high accuracy.
+    // Call Anthropic via AI SDK with Structured Output
+    const { object } = await generateObject({
+      model: anthropic('claude-4-sonnet-20250514'),
+      schema: classificationSchema,
+      prompt: `You are a professional information extraction specialist. Your task is to analyze text and extract specific structured data with high accuracy.
 
 EXTRACTION TARGETS:
 1. ZIP CODE: Any postal/ZIP code (5-6 digits, may include letters for international codes)
@@ -87,43 +65,37 @@ PROCESSING RULES:
 QUALITY STANDARDS:
 - Be conservative: only extract information you're confident about
 - Maintain consistency in field naming and format
-- Handle abbreviations and colloquial terms appropriately`
-        },
-        {
-          role: "user",
-          content: text
-        }
-      ],
-      response_format: {
-        type: "json_schema",
-        json_schema: {
-          name: "classification_result",
-          strict: true,
-          schema: classificationSchema
-        }
-      },
-      temperature: 0.3, // Low temperature for more predictable results
+- Handle abbreviations and colloquial terms appropriately
+
+TEXT TO ANALYZE: ${text}`,
+      temperature: 0.3,
     });
 
-    // Extract result - guaranteed valid JSON thanks to structured output
-    const result = JSON.parse(completion.choices[0].message.content);
-
-    // Return result (only requested data)
-    res.json(result);
+    // Return result (guaranteed type-safe thanks to Zod schema)
+    res.json(object);
 
   } catch (error) {
     console.error('Error processing request:', error);
     
     // Handle different error types
-    if (error.code === 'insufficient_quota') {
-      return res.status(402).json({
-        error: 'OpenAI API quota exceeded'
-      });
+    if (error.name === 'AI_APICallError') {
+      if (error.statusCode === 401) {
+        return res.status(401).json({
+          error: 'Invalid Anthropic API key'
+        });
+      }
+      if (error.statusCode === 429) {
+        return res.status(429).json({
+          error: 'Rate limit exceeded'
+        });
+      }
     }
-    
-    if (error.code === 'invalid_api_key') {
-      return res.status(401).json({
-        error: 'Invalid OpenAI API key'
+
+    // Handle Zod validation errors
+    if (error.name === 'ZodError') {
+      return res.status(500).json({
+        error: 'Schema validation failed',
+        message: process.env.NODE_ENV === 'development' ? error.message : undefined
       });
     }
 

@@ -9,7 +9,7 @@ Modern API for text classification and structured information extraction using *
 - Classify by categories
 - Extract time preferences
 - **Type-safe structured output** via Zod schemas
-- **Modern AI SDK** with Claude 3.4 Sonnet
+- **Modern AI SDK** with Claude 4 Sonnet
 
 ## 📋 Requirements
 
